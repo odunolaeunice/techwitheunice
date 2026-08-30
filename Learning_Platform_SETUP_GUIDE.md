@@ -1,4 +1,4 @@
-# Tech With Eunice Learning Management System (LMS)
+# Tech With Eunice Learning Platform
 ## Complete Setup Guide
 
 ---
