@@ -143,7 +143,7 @@ def admin_dashboard():
             col1, col2 = st.columns(2)
             with col1:
                 week = st.selectbox("Week", list(range(1, 14)))
-                content_type = st.selectbox("Type", ["Announcement", "Assignment", "Quiz", "Link"])
+                content_type = st.selectbox("Type", ["Course Material", "Announcement", "Assignment", "Quiz", "Link"])
             with col2:
                 title = st.text_input("Title")
                 description = st.text_area("Description")
@@ -154,8 +154,21 @@ def admin_dashboard():
             with col2:
                 link = st.text_input("Link (optional)")
             
+            # File upload for course materials
+            if content_type == "Course Material":
+                uploaded_file = st.file_uploader("Upload PDF or PPTX", type=['pdf', 'pptx'], key="material_upload")
+            else:
+                uploaded_file = None
+            
             if st.form_submit_button("Add Content"):
                 content = load_json(CONTENT_FILE)
+                
+                file_name = ""
+                file_type = ""
+                if uploaded_file and content_type == "Course Material":
+                    file_name = uploaded_file.name
+                    file_type = uploaded_file.type
+                
                 new_item = {
                     "id": len(content) + 1,
                     "week": week,
@@ -164,6 +177,8 @@ def admin_dashboard():
                     "description": description,
                     "due_date": str(due_date),
                     "link": link,
+                    "file_name": file_name,
+                    "file_type": file_type,
                     "created": datetime.now().strftime("%Y-%m-%d")
                 }
                 content.append(new_item)
@@ -410,6 +425,13 @@ def student_dashboard(student_id):
                     with col1:
                         st.write(f"**{item['type']}:** {item['title']}")
                         st.write(item['description'])
+                        
+                        # Show file if it's a course material
+                        if item['type'] == "Course Material" and item.get('file_name'):
+                            st.info(f"📄 **File:** {item['file_name']}")
+                            st.caption(f"Type: {item.get('file_type', 'PDF/PPTX')}")
+                        
+                        # Show link if available
                         if item['link']:
                             st.markdown(f"🔗 [Access Material]({item['link']})")
                     with col2:
