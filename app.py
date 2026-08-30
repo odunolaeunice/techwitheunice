@@ -250,7 +250,7 @@ def admin_dashboard():
                         st.success("✅ Quiz deleted!")
                         st.rerun()
     
-    # TAB 4: Assignments
+    # TAB 4: Assignments & Submissions
     with tab4:
         st.subheader("Assignment Management")
         assignments = load_json(ASSIGNMENTS_FILE)
@@ -287,6 +287,28 @@ def admin_dashboard():
                         save_json(ASSIGNMENTS_FILE, assignments)
                         st.success("✅ Assignment deleted!")
                         st.rerun()
+        
+        st.write("---")
+        st.subheader("Student Submissions")
+        submissions = load_json(SUBMISSIONS_FILE)
+        if submissions:
+            for sub in submissions:
+                with st.container():
+                    col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
+                    with col1:
+                        st.write(f"**{sub['student_name']}**")
+                    with col2:
+                        st.write(f"**{sub['assignment']}**")
+                    with col3:
+                        if sub.get('google_drive_link'):
+                            st.markdown(f"[📄 Open File]({sub['google_drive_link']})")
+                    with col4:
+                        st.caption(sub['submitted'])
+                    if sub.get('notes'):
+                        st.caption(f"Notes: {sub['notes']}")
+                    st.divider()
+        else:
+            st.info("No submissions yet")
     
     # TAB 5: Grades
     with tab5:
@@ -482,13 +504,11 @@ def student_dashboard(student_id):
                 st.caption(f"Due: {assign['due_date']}")
                 
                 with st.form(f"submit_{assign['id']}"):
-                    uploaded = st.file_uploader("Upload assignment (PDF, PPTX, DOCX, XLSX, JPG, PNG, TXT)", 
-                                               type=['pdf', 'pptx', 'docx', 'xlsx', 'jpg', 'png', 'txt'],
-                                               key=f"file_{assign['id']}")
-                    notes = st.text_area("Notes", key=f"notes_{assign['id']}")
+                    google_drive_link = st.text_input("Google Drive Link (paste your shared file link)", key=f"link_{assign['id']}")
+                    notes = st.text_area("Notes (optional)", key=f"notes_{assign['id']}")
                     
-                    if st.form_submit_button("Submit"):
-                        if uploaded:
+                    if st.form_submit_button("Submit Assignment"):
+                        if google_drive_link:
                             submissions = load_json(SUBMISSIONS_FILE)
                             new_sub = {
                                 "id": len(submissions) + 1,
@@ -496,8 +516,8 @@ def student_dashboard(student_id):
                                 "student_name": student['name'],
                                 "assignment": assign['title'],
                                 "assignment_id": assign['id'],
-                                "file_name": uploaded.name,
-                                "file_type": uploaded.type,
+                                "google_drive_link": google_drive_link,
+                                "notes": notes,
                                 "submitted": datetime.now().strftime("%Y-%m-%d %H:%M"),
                                 "status": "Submitted"
                             }
@@ -505,7 +525,7 @@ def student_dashboard(student_id):
                             save_json(SUBMISSIONS_FILE, submissions)
                             st.success("✅ Assignment submitted!")
                         else:
-                            st.error("❌ Please upload a file")
+                            st.error("❌ Please paste your Google Drive link")
         else:
             st.info("No assignment this week")
     
