@@ -352,33 +352,45 @@ def admin_dashboard():
         
         with grade_tab2:
             st.subheader("Student Quiz Results")
-            if os.path.exists("quiz_results.json"):
-                quiz_results = load_json("quiz_results.json")
-                if quiz_results:
-                    students = load_json(STUDENTS_FILE)
-                    selected_student = st.selectbox("Select Student", [s['name'] for s in students], key="quiz_student")
+            quiz_results_file = "quiz_results.json"
+            
+            if not os.path.exists(quiz_results_file):
+                with open(quiz_results_file, 'w') as f:
+                    json.dump([], f)
+            
+            quiz_results = load_json(quiz_results_file)
+            
+            if quiz_results:
+                students = load_json(STUDENTS_FILE)
+                student_names = [s['name'] for s in students]
+                
+                if student_names:
+                    selected_student = st.selectbox("Select Student", student_names, key="quiz_student")
                     student = next((s for s in students if s['name'] == selected_student), None)
                     
                     student_quizzes = [q for q in quiz_results if q['student_id'] == student['id']]
                     
                     if student_quizzes:
+                        st.write(f"**Quiz Attempts for {selected_student}:**")
                         for quiz in student_quizzes:
-                            col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
-                            with col1:
-                                st.write(f"**Week {quiz['week']}: {quiz['quiz_title']}**")
-                            with col2:
-                                st.write(f"Score: {quiz['score']}/{quiz['total']}")
-                            with col3:
-                                percentage_color = "🟢" if quiz['percentage'] >= 70 else "🔴"
-                                st.write(f"{percentage_color} {quiz['percentage']:.0f}%")
-                            with col4:
-                                st.caption(quiz['submitted'])
+                            with st.container():
+                                col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
+                                with col1:
+                                    st.write(f"**Week {quiz['week']}: {quiz['quiz_title']}**")
+                                with col2:
+                                    st.write(f"**Score:** {quiz['score']}/{quiz['total']}")
+                                with col3:
+                                    percentage_color = "🟢" if quiz['percentage'] >= 70 else "🔴"
+                                    st.write(f"{percentage_color} {quiz['percentage']:.0f}%")
+                                with col4:
+                                    st.caption(quiz['submitted'])
+                                st.divider()
                     else:
-                        st.info("No quiz attempts yet")
+                        st.info(f"No quiz attempts yet for {selected_student}")
                 else:
-                    st.info("No quiz results yet")
+                    st.info("No students registered yet")
             else:
-                st.info("No quiz results yet")
+                st.info("No quiz results yet. Students need to take quizzes first.")
     
     # TAB 6: Announcements
     with tab6:
@@ -469,9 +481,19 @@ def student_dashboard(student_id):
     
     # TAB 1: Course Materials
     with tab1:
-        st.subheader(f"Week {current_week} - Course Materials")
+        st.subheader("📚 Course Materials")
+        
+        # Week selector - can view current and previous weeks
+        available_weeks = list(range(1, student['current_week'] + 1))
+        selected_week = st.selectbox(
+            "Select Week to View",
+            available_weeks,
+            index=len(available_weeks)-1  # Default to current week
+        )
+        
+        st.write(f"**Week {selected_week}**")
         content = load_json(CONTENT_FILE)
-        week_content = [c for c in content if c['week'] == current_week]
+        week_content = [c for c in content if c['week'] == selected_week]
         
         if week_content:
             for item in week_content:
@@ -482,36 +504,46 @@ def student_dashboard(student_id):
                         st.write(item['description'])
                         
                         # Show file if it's a course material
-                        if item['type'] == "Course Material" and item.get('file_name'):
-                            st.info(f"📄 **File:** {item['file_name']}")
-                            st.caption(f"Type: {item.get('file_type', 'PDF/PPTX')}")
+                        if item['type'] == "Course Material" and item.get('link'):
+                            st.markdown(f"📄 [Download Material]({item['link']})")
                         
                         # Show link if available
-                        if item['link']:
-                            st.markdown(f"🔗 [Access Material]({item['link']})")
+                        if item['link'] and item['type'] != "Course Material":
+                            st.markdown(f"🔗 [Access]({item['link']})")
                     with col2:
-                        st.checkbox(f"Completed", key=f"material_{item['id']}")
+                        st.checkbox(f"Completed", key=f"material_{item['id']}_{selected_week}")
                     st.divider()
         else:
             st.info("No materials for this week yet")
     
     # TAB 2: Quizzes
     with tab2:
-        st.subheader(f"Week {current_week} - Quiz")
+        st.subheader("📝 Quizzes")
         quizzes = load_json(QUIZZES_FILE)
-        week_quiz = next((q for q in quizzes if q['week'] == current_week), None)
+        
+        # Week selector - can attempt current and previous weeks
+        available_weeks = list(range(1, student['current_week'] + 1))
+        selected_quiz_week = st.selectbox(
+            "Select Week Quiz",
+            available_weeks,
+            index=len(available_weeks)-1,  # Default to current week
+            key="quiz_week_selector"
+        )
+        
+        week_quiz = next((q for q in quizzes if q['week'] == selected_quiz_week), None)
         
         if week_quiz:
+            st.write(f"**{week_quiz['title']}**")
             score = 0
             answers = []
             for i, q in enumerate(week_quiz['questions']):
                 st.write(f"**Q{i+1}: {q['question']}**")
-                answer = st.radio("Select answer", q['options'], key=f"q_{i}")
+                answer = st.radio("Select answer", q['options'], key=f"q_{i}_{selected_quiz_week}")
                 answers.append(answer)
                 if answer == q['correct']:
                     score += 1
             
-            if st.button("Submit Quiz"):
+            if st.button("Submit Quiz", key=f"submit_quiz_{selected_quiz_week}"):
                 percentage = (score / len(week_quiz['questions'])) * 100
                 st.success(f"✅ Score: {score}/{len(week_quiz['questions'])} ({percentage:.0f}%)")
                 
@@ -521,7 +553,7 @@ def student_dashboard(student_id):
                     "id": len(quiz_results) + 1,
                     "student_id": student_id,
                     "student_name": student['name'],
-                    "week": current_week,
+                    "week": selected_quiz_week,
                     "quiz_title": week_quiz['title'],
                     "score": score,
                     "total": len(week_quiz['questions']),
@@ -531,10 +563,9 @@ def student_dashboard(student_id):
                 quiz_results.append(quiz_result)
                 save_json("quiz_results.json", quiz_results)
                 
-                # Update progress if score >= 70%
-                if percentage >= 70:
+                # Only update progress if on current week and score >= 70%
+                if selected_quiz_week == student['current_week'] and percentage >= 70:
                     students = load_json(STUDENTS_FILE)
-                    # Add ~7.7% per week (100% / 13 weeks)
                     student['progress'] = min(100, student['progress'] + int(100/13))
                     if student['current_week'] < 13:
                         student['current_week'] += 1
@@ -543,8 +574,10 @@ def student_dashboard(student_id):
                     save_json(STUDENTS_FILE, students)
                     st.info("🎉 Score 70%+ - Week unlocked!")
                     st.rerun()
-                else:
+                elif selected_quiz_week == student['current_week'] and percentage < 70:
                     st.warning(f"⚠️ Score below 70%. Try again to unlock next week!")
+                elif selected_quiz_week < student['current_week']:
+                    st.info("📚 This is a review attempt. Keep practicing!")
         else:
             st.info("No quiz this week")
     
