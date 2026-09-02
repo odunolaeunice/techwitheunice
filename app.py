@@ -310,42 +310,75 @@ def admin_dashboard():
         else:
             st.info("No submissions yet")
     
-    # TAB 5: Grades
+    # TAB 5: Grades & Quiz Results
     with tab5:
-        st.subheader("Grade Submissions")
-        students = load_json(STUDENTS_FILE)
-        submissions = load_json(SUBMISSIONS_FILE)
+        grade_tab1, grade_tab2 = st.tabs(["📋 Assignment Grades", "📊 Quiz Results"])
         
-        if students and submissions:
-            selected_student = st.selectbox("Select Student", [s['name'] for s in students])
-            student = next((s for s in students if s['name'] == selected_student), None)
+        with grade_tab1:
+            st.subheader("Grade Assignment Submissions")
+            students = load_json(STUDENTS_FILE)
+            submissions = load_json(SUBMISSIONS_FILE)
             
-            student_subs = [s for s in submissions if s['student_id'] == student['id']]
-            
-            if student_subs:
-                for sub in student_subs:
-                    col1, col2, col3 = st.columns([2, 1, 1])
-                    with col1:
-                        st.write(f"**{sub['assignment']}**")
-                    with col2:
-                        grade = st.number_input(f"Grade", min_value=0, max_value=100, value=0, key=f"grade_{sub['id']}")
-                    with col3:
-                        if st.button("Save", key=f"save_{sub['id']}"):
-                            grades = load_json(GRADES_FILE)
-                            existing = next((g for g in grades if g['student_id'] == student['id'] and g['assignment_id'] == sub['id']), None)
-                            if existing:
-                                existing['grade'] = grade
-                            else:
-                                grades.append({
-                                    "student_id": student['id'],
-                                    "assignment_id": sub['id'],
-                                    "assignment": sub['assignment'],
-                                    "grade": grade
-                                })
-                            save_json(GRADES_FILE, grades)
-                            st.success("✅ Grade saved!")
-        else:
-            st.info("No submissions yet")
+            if students and submissions:
+                selected_student = st.selectbox("Select Student", [s['name'] for s in students])
+                student = next((s for s in students if s['name'] == selected_student), None)
+                
+                student_subs = [s for s in submissions if s['student_id'] == student['id']]
+                
+                if student_subs:
+                    for sub in student_subs:
+                        col1, col2, col3 = st.columns([2, 1, 1])
+                        with col1:
+                            st.write(f"**{sub['assignment']}**")
+                        with col2:
+                            grade = st.number_input(f"Grade", min_value=0, max_value=100, value=0, key=f"grade_{sub['id']}")
+                        with col3:
+                            if st.button("Save", key=f"save_{sub['id']}"):
+                                grades = load_json(GRADES_FILE)
+                                existing = next((g for g in grades if g['student_id'] == student['id'] and g['assignment_id'] == sub['id']), None)
+                                if existing:
+                                    existing['grade'] = grade
+                                else:
+                                    grades.append({
+                                        "student_id": student['id'],
+                                        "assignment_id": sub['id'],
+                                        "assignment": sub['assignment'],
+                                        "grade": grade
+                                    })
+                                save_json(GRADES_FILE, grades)
+                                st.success("✅ Grade saved!")
+            else:
+                st.info("No submissions yet")
+        
+        with grade_tab2:
+            st.subheader("Student Quiz Results")
+            if os.path.exists("quiz_results.json"):
+                quiz_results = load_json("quiz_results.json")
+                if quiz_results:
+                    students = load_json(STUDENTS_FILE)
+                    selected_student = st.selectbox("Select Student", [s['name'] for s in students], key="quiz_student")
+                    student = next((s for s in students if s['name'] == selected_student), None)
+                    
+                    student_quizzes = [q for q in quiz_results if q['student_id'] == student['id']]
+                    
+                    if student_quizzes:
+                        for quiz in student_quizzes:
+                            col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
+                            with col1:
+                                st.write(f"**Week {quiz['week']}: {quiz['quiz_title']}**")
+                            with col2:
+                                st.write(f"Score: {quiz['score']}/{quiz['total']}")
+                            with col3:
+                                percentage_color = "🟢" if quiz['percentage'] >= 70 else "🔴"
+                                st.write(f"{percentage_color} {quiz['percentage']:.0f}%")
+                            with col4:
+                                st.caption(quiz['submitted'])
+                    else:
+                        st.info("No quiz attempts yet")
+                else:
+                    st.info("No quiz results yet")
+            else:
+                st.info("No quiz results yet")
     
     # TAB 6: Announcements
     with tab6:
@@ -470,24 +503,48 @@ def student_dashboard(student_id):
         
         if week_quiz:
             score = 0
+            answers = []
             for i, q in enumerate(week_quiz['questions']):
                 st.write(f"**Q{i+1}: {q['question']}**")
                 answer = st.radio("Select answer", q['options'], key=f"q_{i}")
+                answers.append(answer)
                 if answer == q['correct']:
                     score += 1
             
             if st.button("Submit Quiz"):
-                st.success(f"✅ Score: {score}/{len(week_quiz['questions'])}")
-                # Update progress if perfect score
-                if score == len(week_quiz['questions']):
+                percentage = (score / len(week_quiz['questions'])) * 100
+                st.success(f"✅ Score: {score}/{len(week_quiz['questions'])} ({percentage:.0f}%)")
+                
+                # Save quiz result
+                quiz_results = load_json("quiz_results.json") if os.path.exists("quiz_results.json") else []
+                quiz_result = {
+                    "id": len(quiz_results) + 1,
+                    "student_id": student_id,
+                    "student_name": student['name'],
+                    "week": current_week,
+                    "quiz_title": week_quiz['title'],
+                    "score": score,
+                    "total": len(week_quiz['questions']),
+                    "percentage": percentage,
+                    "submitted": datetime.now().strftime("%Y-%m-%d %H:%M")
+                }
+                quiz_results.append(quiz_result)
+                save_json("quiz_results.json", quiz_results)
+                
+                # Update progress if score >= 70%
+                if percentage >= 70:
                     students = load_json(STUDENTS_FILE)
-                    student['progress'] = min(100, student['progress'] + 10)
+                    # Add ~7.7% per week (100% / 13 weeks)
+                    student['progress'] = min(100, student['progress'] + int(100/13))
                     if student['current_week'] < 13:
                         student['current_week'] += 1
                     idx = next((i for i, s in enumerate(students) if s['id'] == student_id), None)
                     students[idx] = student
                     save_json(STUDENTS_FILE, students)
+                    st.info("🎉 Score 70%+ - Week unlocked!")
                     st.rerun()
+                else:
+                    st.warning(f"⚠️ Score below 70%. Try again to unlock next week!")
         else:
             st.info("No quiz this week")
     
@@ -496,6 +553,7 @@ def student_dashboard(student_id):
         st.subheader(f"Week {current_week} - Assignment Submission")
         assignments = load_json(ASSIGNMENTS_FILE)
         week_assign = [a for a in assignments if a['week'] == current_week]
+        submissions = load_json(SUBMISSIONS_FILE)
         
         if week_assign:
             for assign in week_assign:
@@ -503,6 +561,26 @@ def student_dashboard(student_id):
                 st.write(assign['description'])
                 st.caption(f"Due: {assign['due_date']}")
                 
+                # Show previous submissions
+                my_submissions = [s for s in submissions if s['student_id'] == student_id and s['assignment_id'] == assign['id']]
+                if my_submissions:
+                    st.info("**Your Submissions:**")
+                    for sub in my_submissions:
+                        col1, col2, col3 = st.columns([3, 1, 1])
+                        with col1:
+                            st.write(f"📤 Submitted: {sub['submitted']}")
+                            if sub.get('google_drive_link'):
+                                st.markdown(f"🔗 [View File]({sub['google_drive_link']})")
+                        with col2:
+                            st.caption("Status: Submitted")
+                        with col3:
+                            if st.button("🗑️ Delete", key=f"del_sub_{sub['id']}"):
+                                submissions = [s for s in submissions if s['id'] != sub['id']]
+                                save_json(SUBMISSIONS_FILE, submissions)
+                                st.success("✅ Submission deleted!")
+                                st.rerun()
+                
+                # New submission form
                 with st.form(f"submit_{assign['id']}"):
                     google_drive_link = st.text_input("Google Drive Link (paste your shared file link)", key=f"link_{assign['id']}")
                     notes = st.text_area("Notes (optional)", key=f"notes_{assign['id']}")
@@ -524,8 +602,11 @@ def student_dashboard(student_id):
                             submissions.append(new_sub)
                             save_json(SUBMISSIONS_FILE, submissions)
                             st.success("✅ Assignment submitted!")
+                            st.rerun()
                         else:
                             st.error("❌ Please paste your Google Drive link")
+                
+                st.divider()
         else:
             st.info("No assignment this week")
     
