@@ -65,7 +65,7 @@ if 'current_student_id' not in st.session_state:
 def admin_dashboard():
     st.markdown("<div class='header'><h1>🎓 Tech With Eunice - Admin Dashboard</h1></div>", unsafe_allow_html=True)
     
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["📊 Students", "📅 Content", "📝 Quizzes", "📋 Assignments", "📈 Grades", "📢 Announcements", "✅ Attendance", "⚙️ Settings"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(["📊 Students", "📅 Content", "📝 Quizzes", "📋 Assignments", "📈 Grades", "📢 Announcements", "✅ Attendance", "⚙️ Settings", "📱 Social Media"])
     
     # TAB 1: Students
     with tab1:
@@ -462,6 +462,83 @@ def admin_dashboard():
             st.write("- Weeks 9-11: Power BI")
             st.write("- Week 12: GitHub")
             st.write("- Week 13: Presentations")
+    
+    # TAB 9: Social Media Content Calendar
+    with tab9:
+        st.subheader("📱 Social Media Content Calendar")
+        st.write("Create content ideas for students to post (2 per week)")
+        
+        social_media_file = "social_media_calendar.json"
+        if not os.path.exists(social_media_file):
+            with open(social_media_file, 'w') as f:
+                json.dump([], f)
+        
+        with st.form("add_social_content"):
+            col1, col2 = st.columns(2)
+            with col1:
+                week = st.selectbox("Week", list(range(1, 14)), key="social_week")
+                post_number = st.selectbox("Post Number", [1, 2])
+            with col2:
+                content_idea = st.text_input("Content Idea (e.g., Post Excel project)")
+                description = st.text_area("Description (optional)")
+            
+            if st.form_submit_button("Add Content Idea"):
+                social_calendar = load_json(social_media_file)
+                new_idea = {
+                    "id": len(social_calendar) + 1,
+                    "week": week,
+                    "post_number": post_number,
+                    "content_idea": content_idea,
+                    "description": description,
+                    "created": datetime.now().strftime("%Y-%m-%d")
+                }
+                social_calendar.append(new_idea)
+                save_json(social_media_file, social_calendar)
+                st.success("✅ Content idea added!")
+                st.rerun()
+        
+        st.write("---")
+        st.subheader("Content Ideas & Student Status")
+        social_calendar = load_json(social_media_file)
+        student_posts_file = "student_social_posts.json"
+        
+        if os.path.exists(student_posts_file):
+            student_posts = load_json(student_posts_file)
+        else:
+            student_posts = []
+        
+        if social_calendar:
+            for idea in sorted(social_calendar, key=lambda x: (x['week'], x['post_number'])):
+                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+                with col1:
+                    st.write(f"**Week {idea['week']}, Post {idea['post_number']}:** {idea['content_idea']}")
+                    if idea['description']:
+                        st.caption(idea['description'])
+                
+                # Count posted students
+                posted_count = len([p for p in student_posts if p['idea_id'] == idea['id'] and p['posted']])
+                total_students = len(load_json(STUDENTS_FILE))
+                
+                with col2:
+                    st.metric("Posted", f"{posted_count}/{total_students}")
+                with col3:
+                    if st.button("📊 View", key=f"view_social_{idea['id']}"):
+                        st.info("Posted by:")
+                        posted_by = [p for p in student_posts if p['idea_id'] == idea['id'] and p['posted']]
+                        if posted_by:
+                            for p in posted_by:
+                                st.write(f"✅ {p['student_name']} - {p['posted_date']}")
+                        else:
+                            st.write("No one has posted yet")
+                with col4:
+                    if st.button("🗑️", key=f"del_social_{idea['id']}"):
+                        social_calendar = [s for s in social_calendar if s['id'] != idea['id']]
+                        save_json(social_media_file, social_calendar)
+                        st.success("✅ Deleted!")
+                        st.rerun()
+                st.divider()
+        else:
+            st.info("No content ideas yet")
 
 # STUDENT DASHBOARD
 def student_dashboard(student_id):
@@ -477,7 +554,7 @@ def student_dashboard(student_id):
     # Check weekly unlock
     current_week = student['current_week']
     
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📚 Materials", "📝 Quizzes", "📋 Assignments", "📊 Progress", "📢 Announcements", "📝 Feedback"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📚 Materials", "📝 Quizzes", "📋 Assignments", "📊 Progress", "📢 Announcements", "📝 Feedback", "📱 Social Posts"])
     
     # TAB 1: Course Materials
     with tab1:
@@ -563,16 +640,27 @@ def student_dashboard(student_id):
                 quiz_results.append(quiz_result)
                 save_json("quiz_results.json", quiz_results)
                 
-                # Only update progress if on current week and score >= 70%
-                if selected_quiz_week == student['current_week'] and percentage >= 70:
+                # Update progress if score >= 70%
+                if percentage >= 70:
                     students = load_json(STUDENTS_FILE)
-                    student['progress'] = min(100, student['progress'] + int(100/13))
+                    
+                    # Progress calculation: 8% per week for weeks 1-12, 100% at week 13
+                    if student['current_week'] == 13:
+                        student['progress'] = 100  # Exactly 100% at week 13
+                    else:
+                        student['progress'] = min(100, (student['current_week']) * 8)
+                    
                     if student['current_week'] < 13:
                         student['current_week'] += 1
+                    
                     idx = next((i for i, s in enumerate(students) if s['id'] == student_id), None)
                     students[idx] = student
                     save_json(STUDENTS_FILE, students)
-                    st.info("🎉 Score 70%+ - Week unlocked!")
+                    
+                    if student['current_week'] == 13:
+                        st.info("🎉 Score 70%+ - Final week unlocked!")
+                    else:
+                        st.info("🎉 Score 70%+ - Week unlocked!")
                     st.rerun()
                 elif selected_quiz_week == student['current_week'] and percentage < 70:
                     st.warning(f"⚠️ Score below 70%. Try again to unlock next week!")
@@ -683,6 +771,68 @@ def student_dashboard(student_id):
                     st.divider()
         else:
             st.info("No feedback yet")
+    
+    # TAB 7: Social Media Posts
+    with tab7:
+        st.subheader("📱 Social Media Posting Ideas")
+        st.write(f"**Week {current_week}** - Post your work on social media!")
+        
+        social_media_file = "social_media_calendar.json"
+        student_posts_file = "student_social_posts.json"
+        
+        if not os.path.exists(social_media_file):
+            with open(social_media_file, 'w') as f:
+                json.dump([], f)
+        
+        if not os.path.exists(student_posts_file):
+            with open(student_posts_file, 'w') as f:
+                json.dump([], f)
+        
+        social_calendar = load_json(social_media_file)
+        student_posts = load_json(student_posts_file)
+        
+        # Get ideas for current week
+        week_ideas = [idea for idea in social_calendar if idea['week'] == current_week]
+        
+        if week_ideas:
+            for idea in sorted(week_ideas, key=lambda x: x['post_number']):
+                with st.container():
+                    col1, col2, col3 = st.columns([3, 1, 1])
+                    with col1:
+                        st.write(f"**Post {idea['post_number']}:** {idea['content_idea']}")
+                        if idea['description']:
+                            st.caption(idea['description'])
+                    
+                    # Check if already posted
+                    posted = any(p['student_id'] == student_id and p['idea_id'] == idea['id'] and p['posted'] for p in student_posts)
+                    
+                    with col2:
+                        if posted:
+                            st.success("✅ Posted")
+                        else:
+                            st.caption("Not Posted")
+                    
+                    with col3:
+                        if not posted:
+                            if st.button("✅ Mark Posted", key=f"mark_posted_{idea['id']}"):
+                                new_post = {
+                                    "id": len(student_posts) + 1,
+                                    "student_id": student_id,
+                                    "student_name": student['name'],
+                                    "idea_id": idea['id'],
+                                    "week": current_week,
+                                    "post_number": idea['post_number'],
+                                    "content_idea": idea['content_idea'],
+                                    "posted": True,
+                                    "posted_date": datetime.now().strftime("%Y-%m-%d %H:%M")
+                                }
+                                student_posts.append(new_post)
+                                save_json(student_posts_file, student_posts)
+                                st.success("✅ Marked as posted!")
+                                st.rerun()
+                    st.divider()
+        else:
+            st.info("No posting ideas for this week yet")
 
 # MAIN APP
 def main():
