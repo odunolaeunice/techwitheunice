@@ -1,68 +1,90 @@
 import streamlit as st
 import pandas as pd
-import json
-import os
-from datetime import datetime, timedelta
+from datetime import datetime
 import hashlib
-import io
+from supabase import create_client, Client
 
 # Page config
 st.set_page_config(page_title="Tech With Eunice LMS", layout="wide", initial_sidebar_state="expanded")
 
 # Custom CSS
 st.markdown("""
-    <style>
-    .header { background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); padding: 20px; border-radius: 10px; color: white; text-align: center; }
-    .success { color: #28a745; }
-    .warning { color: #ff6b35; }
-    .badge { display: inline-block; background: #ff6b35; color: white; padding: 5px 10px; border-radius: 5px; font-size: 12px; }
-    </style>
-    """, unsafe_allow_html=True)
+<style>
+.header { background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); padding: 20px; border-radius: 10px; color: white; text-align: center; }
+.success { color: #28a745; }
+.warning { color: #ff6b35; }
+.badge { display: inline-block; background: #ff6b35; color: white; padding: 5px 10px; border-radius: 5px; font-size: 12px; }
+</style>
+""", unsafe_allow_html=True)
 
-# Data files
-STUDENTS_FILE = "students.json"
-CONTENT_FILE = "content.json"
-ASSIGNMENTS_FILE = "assignments.json"
-SUBMISSIONS_FILE = "submissions.json"
-QUIZZES_FILE = "quizzes.json"
-GRADES_FILE = "grades.json"
-ANNOUNCEMENTS_FILE = "announcements.json"
-ATTENDANCE_FILE = "attendance.json"
-FEEDBACK_FILE = "feedback.json"
-QUIZ_RESULTS_FILE = "quiz_results.json"
+# ---------------------------------------------------------------------------
+# SUPABASE CONNECTION
+# All data now lives in Supabase (Postgres), not in local JSON files.
+# A Streamlit reboot/redeploy can no longer wipe student data, because
+# nothing important is stored inside the app's own filesystem anymore.
+# ---------------------------------------------------------------------------
 
-def init_data_files():
-    for f in [STUDENTS_FILE, CONTENT_FILE, ASSIGNMENTS_FILE, SUBMISSIONS_FILE,
-              QUIZZES_FILE, GRADES_FILE, ANNOUNCEMENTS_FILE, ATTENDANCE_FILE,
-              FEEDBACK_FILE, QUIZ_RESULTS_FILE]:
-        if not os.path.exists(f):
-            with open(f, 'w') as file:
-                json.dump([], file)
+@st.cache_resource
+def init_supabase() -> Client:
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
 
-init_data_files()
+supabase = init_supabase()
 
-def load_json(filename):
-    with open(filename, 'r') as f:
-        return json.load(f)
 
-def save_json(filename, data):
-    with open(filename, 'w') as f:
-        json.dump(data, f, indent=2)
+def db_select(table, filters=None, order_by=None, desc=False):
+    """Read all rows from a table, optionally filtered by exact-match columns."""
+    query = supabase.table(table).select("*")
+    if filters:
+        for col, val in filters.items():
+            query = query.eq(col, val)
+    if order_by:
+        query = query.order(order_by, desc=desc)
+    result = query.execute()
+    return result.data or []
+
+
+def db_insert(table, data):
+    """Insert a single row and return it (with its DB-generated id)."""
+    result = supabase.table(table).insert(data).execute()
+    return result.data[0] if result.data else None
+
+
+def db_insert_many(table, rows):
+    """Insert several rows at once (used for bulk content upload)."""
+    if not rows:
+        return []
+    result = supabase.table(table).insert(rows).execute()
+    return result.data or []
+
+
+def db_update(table, row_id, data):
+    supabase.table(table).update(data).eq("id", row_id).execute()
+
+
+def db_delete(table, row_id):
+    supabase.table(table).delete().eq("id", row_id).execute()
+
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
+
 def check_admin_password(password):
     return hash_password(password) == hash_password("admin123")
 
+
 def get_weeks_passed(student):
     """Backward-compatible accessor: older student records won't have this key yet."""
-    return student.get('weeks_passed', [])
+    return student.get('weeks_passed') or []
+
 
 def recompute_progress(weeks_passed, total_weeks=13):
     """Progress is driven purely by how many DISTINCT weeks have been passed,
     never by how many times a quiz was submitted."""
     return min(100, round(len(weeks_passed) / total_weeks * 100))
+
 
 # Session state initialization
 if 'logged_in' not in st.session_state:
@@ -72,16 +94,22 @@ if 'user_type' not in st.session_state:
 if 'current_student_id' not in st.session_state:
     st.session_state.current_student_id = None
 
+
+# ============================================================
 # ADMIN DASHBOARD
+# ============================================================
 def admin_dashboard():
     st.markdown("<div class='header'><h1>🎓 Tech With Eunice - Admin Dashboard</h1></div>", unsafe_allow_html=True)
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(["📊 Students", "📅 Content", "📝 Quizzes", "📋 Assignments", "📈 Grades", "📢 Announcements", "✅ Attendance", "⚙️ Settings", "📱 Social Media"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(
+        ["📊 Students", "📅 Content", "📝 Quizzes", "📋 Assignments", "📈 Grades",
+         "📢 Announcements", "✅ Attendance", "⚙️ Settings", "📱 Social Media"]
+    )
 
     # TAB 1: Students
     with tab1:
         st.subheader("Student Management")
-        students = load_json(STUDENTS_FILE)
+        students = db_select("students")
         st.write(f"**Total Students:** {len(students)}")
 
         col1, col2 = st.columns([3, 1])
@@ -96,7 +124,6 @@ def admin_dashboard():
                 gender = st.selectbox("Gender", ["Male", "Female", "Other"])
                 if st.form_submit_button("Add"):
                     new_student = {
-                        "id": len(students) + 1,
                         "name": name,
                         "email": email,
                         "gender": gender,
@@ -105,8 +132,7 @@ def admin_dashboard():
                         "current_week": 1,
                         "weeks_passed": []
                     }
-                    students.append(new_student)
-                    save_json(STUDENTS_FILE, students)
+                    db_insert("students", new_student)
                     st.success(f"✅ {name} added!")
                     st.session_state.show_add_student = False
                     st.rerun()
@@ -119,7 +145,6 @@ def admin_dashboard():
     # TAB 2: Content Calendar
     with tab2:
         st.subheader("Course Content Management")
-
         col1, col2 = st.columns([3, 1])
         with col2:
             if st.button("📤 Bulk Upload"):
@@ -134,10 +159,9 @@ def admin_dashboard():
                 else:
                     df = pd.read_excel(uploaded_file)
 
-                content = load_json(CONTENT_FILE)
+                rows = []
                 for _, row in df.iterrows():
-                    new_content = {
-                        "id": len(content) + 1,
+                    rows.append({
                         "week": int(row['Week']),
                         "type": row['Type'],
                         "title": row['Title'],
@@ -145,9 +169,8 @@ def admin_dashboard():
                         "due_date": str(row['DueDate']) if 'DueDate' in row else "",
                         "link": str(row['Link']) if 'Link' in row else "",
                         "created": datetime.now().strftime("%Y-%m-%d")
-                    }
-                    content.append(new_content)
-                save_json(CONTENT_FILE, content)
+                    })
+                db_insert_many("content", rows)
                 st.success(f"✅ {len(df)} items uploaded!")
                 st.session_state.show_bulk_upload = False
                 st.rerun()
@@ -167,15 +190,12 @@ def admin_dashboard():
             with col2:
                 link = st.text_input("Link (optional)")
 
-            # File upload for course materials
             if content_type == "Course Material":
                 uploaded_file = st.file_uploader("Upload PDF or PPTX", type=['pdf', 'pptx'], key="material_upload")
             else:
                 uploaded_file = None
 
             if st.form_submit_button("Add Content"):
-                content = load_json(CONTENT_FILE)
-
                 file_name = ""
                 file_type = ""
                 if uploaded_file and content_type == "Course Material":
@@ -183,7 +203,6 @@ def admin_dashboard():
                     file_type = uploaded_file.type
 
                 new_item = {
-                    "id": len(content) + 1,
                     "week": week,
                     "type": content_type,
                     "title": title,
@@ -194,12 +213,11 @@ def admin_dashboard():
                     "file_type": file_type,
                     "created": datetime.now().strftime("%Y-%m-%d")
                 }
-                content.append(new_item)
-                save_json(CONTENT_FILE, content)
+                db_insert("content", new_item)
                 st.success("✅ Content added!")
                 st.rerun()
 
-        content = load_json(CONTENT_FILE)
+        content = db_select("content")
         if content:
             st.write("**Manage Content:**")
             for item in content:
@@ -210,15 +228,14 @@ def admin_dashboard():
                     st.caption(f"Due: {item['due_date']}")
                 with col3:
                     if st.button("🗑️", key=f"del_content_{item['id']}"):
-                        content = [c for c in content if c['id'] != item['id']]
-                        save_json(CONTENT_FILE, content)
+                        db_delete("content", item['id'])
                         st.success("✅ Deleted!")
                         st.rerun()
 
     # TAB 3: Quizzes
     with tab3:
         st.subheader("Quiz Management")
-        quizzes = load_json(QUIZZES_FILE)
+        quizzes = db_select("quizzes")
 
         with st.form("create_quiz"):
             week = st.selectbox("Week", list(range(1, 14)), key="quiz_week")
@@ -239,14 +256,12 @@ def admin_dashboard():
 
             if st.form_submit_button("Create Quiz"):
                 new_quiz = {
-                    "id": len(quizzes) + 1,
                     "week": week,
                     "title": quiz_title,
                     "questions": questions,
                     "created": datetime.now().strftime("%Y-%m-%d")
                 }
-                quizzes.append(new_quiz)
-                save_json(QUIZZES_FILE, quizzes)
+                db_insert("quizzes", new_quiz)
                 st.success("✅ Quiz created!")
                 st.rerun()
 
@@ -258,15 +273,14 @@ def admin_dashboard():
                     st.write(f"Week {quiz['week']}: {quiz['title']} ({len(quiz['questions'])} questions)")
                 with col2:
                     if st.button("🗑️", key=f"del_quiz_{quiz['id']}"):
-                        quizzes = [q for q in quizzes if q['id'] != quiz['id']]
-                        save_json(QUIZZES_FILE, quizzes)
+                        db_delete("quizzes", quiz['id'])
                         st.success("✅ Quiz deleted!")
                         st.rerun()
 
     # TAB 4: Assignments & Submissions
     with tab4:
         st.subheader("Assignment Management")
-        assignments = load_json(ASSIGNMENTS_FILE)
+        assignments = db_select("assignments")
 
         with st.form("add_assignment"):
             week = st.selectbox("Week", list(range(1, 14)), key="assign_week")
@@ -276,15 +290,13 @@ def admin_dashboard():
 
             if st.form_submit_button("Create Assignment"):
                 new_assign = {
-                    "id": len(assignments) + 1,
                     "week": week,
                     "title": title,
                     "description": description,
                     "due_date": str(due_date),
                     "created": datetime.now().strftime("%Y-%m-%d")
                 }
-                assignments.append(new_assign)
-                save_json(ASSIGNMENTS_FILE, assignments)
+                db_insert("assignments", new_assign)
                 st.success("✅ Assignment created!")
                 st.rerun()
 
@@ -296,14 +308,13 @@ def admin_dashboard():
                     st.write(f"Week {assign['week']}: {assign['title']} (Due: {assign['due_date']})")
                 with col2:
                     if st.button("🗑️", key=f"del_assign_{assign['id']}"):
-                        assignments = [a for a in assignments if a['id'] != assign['id']]
-                        save_json(ASSIGNMENTS_FILE, assignments)
+                        db_delete("assignments", assign['id'])
                         st.success("✅ Assignment deleted!")
                         st.rerun()
 
         st.write("---")
         st.subheader("Student Submissions")
-        submissions = load_json(SUBMISSIONS_FILE)
+        submissions = db_select("submissions")
         if submissions:
             for sub in submissions:
                 with st.container():
@@ -329,13 +340,12 @@ def admin_dashboard():
 
         with grade_tab1:
             st.subheader("Grade Assignment Submissions")
-            students = load_json(STUDENTS_FILE)
-            submissions = load_json(SUBMISSIONS_FILE)
+            students = db_select("students")
+            submissions = db_select("submissions")
 
             if students and submissions:
                 selected_student = st.selectbox("Select Student", [s['name'] for s in students])
                 student = next((s for s in students if s['name'] == selected_student), None)
-
                 student_subs = [s for s in submissions if s['student_id'] == student['id']]
 
                 if student_subs:
@@ -347,48 +357,44 @@ def admin_dashboard():
                             grade = st.number_input(f"Grade", min_value=0, max_value=100, value=0, key=f"grade_{sub['id']}")
                         with col3:
                             if st.button("Save", key=f"save_{sub['id']}"):
-                                grades = load_json(GRADES_FILE)
-                                existing = next((g for g in grades if g['student_id'] == student['id'] and g['assignment_id'] == sub['id']), None)
+                                existing = db_select("grades", filters={"assignment_id": sub['id']})
+                                existing = [g for g in existing if g['student_id'] == student['id']]
                                 if existing:
-                                    existing['grade'] = grade
+                                    db_update("grades", existing[0]['id'], {"grade": grade})
                                 else:
-                                    grades.append({
+                                    db_insert("grades", {
                                         "student_id": student['id'],
                                         "assignment_id": sub['id'],
                                         "assignment": sub['assignment'],
                                         "grade": grade
                                     })
-                                save_json(GRADES_FILE, grades)
                                 st.success("✅ Grade saved!")
-            else:
-                st.info("No submissions yet")
+                else:
+                    st.info("No submissions yet")
 
         with grade_tab2:
             st.subheader("Student Quiz Results (Highest Score Per Week)")
-            quiz_results = load_json(QUIZ_RESULTS_FILE)
+            quiz_results = db_select("quiz_results")
 
             if quiz_results:
-                students = load_json(STUDENTS_FILE)
+                students = db_select("students")
                 student_names = [s['name'] for s in students]
 
                 if student_names:
                     selected_student = st.selectbox("Select Student", student_names, key="quiz_student")
                     student = next((s for s in students if s['name'] == selected_student), None)
-
                     student_quizzes = [q for q in quiz_results if q['student_id'] == student['id']]
 
                     if student_quizzes:
                         st.write(f"**Quiz Results for {selected_student}:**")
                         st.caption(f"(Showing HIGHEST score per week — {len(student_quizzes)} total attempts on record)")
 
-                        # Group by week and get highest score
                         weeks_data = {}
                         for quiz in student_quizzes:
                             week = quiz['week']
                             if week not in weeks_data or quiz['percentage'] > weeks_data[week]['percentage']:
                                 weeks_data[week] = quiz
 
-                        # Display highest scores
                         for week in sorted(weeks_data.keys()):
                             quiz = weeks_data[week]
                             attempts_this_week = len([q for q in student_quizzes if q['week'] == week])
@@ -415,49 +421,42 @@ def admin_dashboard():
     # TAB 6: Announcements
     with tab6:
         st.subheader("Broadcast to All Students")
-
         with st.form("announce"):
             title = st.text_input("Announcement Title")
             message = st.text_area("Message")
-
             if st.form_submit_button("Send Announcement"):
-                announcements = load_json(ANNOUNCEMENTS_FILE)
                 new_announce = {
-                    "id": len(announcements) + 1,
                     "title": title,
                     "message": message,
                     "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                     "read_by": []
                 }
-                announcements.append(new_announce)
-                save_json(ANNOUNCEMENTS_FILE, announcements)
+                db_insert("announcements", new_announce)
                 st.success("✅ Announcement sent to all students!")
 
         st.write("---")
         st.subheader("Manage Announcements")
-        announcements = load_json(ANNOUNCEMENTS_FILE)
+        announcements = db_select("announcements", order_by="id", desc=True)
         if announcements:
-            for announce in reversed(announcements):
+            for announce in announcements:
                 col1, col2 = st.columns([4, 1])
                 with col1:
                     st.write(f"**{announce['title']}** - {announce['date']}")
                 with col2:
                     if st.button("🗑️", key=f"del_announce_{announce['id']}"):
-                        announcements = [a for a in announcements if a['id'] != announce['id']]
-                        save_json(ANNOUNCEMENTS_FILE, announcements)
+                        db_delete("announcements", announce['id'])
                         st.success("✅ Announcement deleted!")
                         st.rerun()
 
     # TAB 7: Attendance
     with tab7:
         st.subheader("Class Attendance")
-        attendance = load_json(ATTENDANCE_FILE)
-        students = load_json(STUDENTS_FILE)
+        attendance = db_select("attendance")
+        students = db_select("students")
 
         if attendance and students:
             attendance_df = pd.DataFrame(attendance)
             st.dataframe(attendance_df, use_container_width=True)
-
             col1, col2 = st.columns(2)
             with col1:
                 st.metric("Total Records", len(attendance))
@@ -467,14 +466,12 @@ def admin_dashboard():
     # TAB 8: Settings
     with tab8:
         st.subheader("Cohort Settings")
-
         col1, col2 = st.columns(2)
         with col1:
             st.write("**Cohort Information**")
             st.write("- Duration: 13 weeks (Sep-Nov 2026)")
             st.write("- Classes: Twice weekly")
             st.write("- Cost: ₦50,000")
-
         with col2:
             st.write("**Curriculum**")
             st.write("- Weeks 1-4: Excel")
@@ -488,11 +485,6 @@ def admin_dashboard():
         st.subheader("📱 Social Media Content Calendar")
         st.write("Create content ideas for students to post (2 per week)")
 
-        social_media_file = "social_media_calendar.json"
-        if not os.path.exists(social_media_file):
-            with open(social_media_file, 'w') as f:
-                json.dump([], f)
-
         with st.form("add_social_content"):
             col1, col2 = st.columns(2)
             with col1:
@@ -503,29 +495,21 @@ def admin_dashboard():
                 description = st.text_area("Description (optional)")
 
             if st.form_submit_button("Add Content Idea"):
-                social_calendar = load_json(social_media_file)
                 new_idea = {
-                    "id": len(social_calendar) + 1,
                     "week": week,
                     "post_number": post_number,
                     "content_idea": content_idea,
                     "description": description,
                     "created": datetime.now().strftime("%Y-%m-%d")
                 }
-                social_calendar.append(new_idea)
-                save_json(social_media_file, social_calendar)
+                db_insert("social_media_calendar", new_idea)
                 st.success("✅ Content idea added!")
                 st.rerun()
 
         st.write("---")
         st.subheader("Content Ideas & Student Status")
-        social_calendar = load_json(social_media_file)
-        student_posts_file = "student_social_posts.json"
-
-        if os.path.exists(student_posts_file):
-            student_posts = load_json(student_posts_file)
-        else:
-            student_posts = []
+        social_calendar = db_select("social_media_calendar")
+        student_posts = db_select("student_social_posts")
 
         if social_calendar:
             for idx, idea in enumerate(sorted(social_calendar, key=lambda x: (x['week'], x['post_number']))):
@@ -535,10 +519,8 @@ def admin_dashboard():
                     if idea['description']:
                         st.caption(idea['description'])
 
-                # Count posted students
                 posted_count = len([p for p in student_posts if p['idea_id'] == idea['id'] and p['posted']])
-                total_students = len(load_json(STUDENTS_FILE))
-
+                total_students = len(db_select("students"))
                 with col2:
                     st.metric("Posted", f"{posted_count}/{total_students}")
                 with col3:
@@ -552,44 +534,45 @@ def admin_dashboard():
                             st.write("No one has posted yet")
                 with col4:
                     if st.button("🗑️", key=f"del_social_{idea['id']}_{idx}"):
-                        social_calendar = [s for s in social_calendar if s['id'] != idea['id']]
-                        save_json(social_media_file, social_calendar)
+                        db_delete("social_media_calendar", idea['id'])
                         st.success("✅ Deleted!")
                         st.rerun()
                 st.divider()
         else:
             st.info("No content ideas yet")
 
-# STUDENT DASHBOARD
-def student_dashboard(student_id):
-    students = load_json(STUDENTS_FILE)
-    student = next((s for s in students if s['id'] == student_id), None)
 
+# ============================================================
+# STUDENT DASHBOARD
+# ============================================================
+def student_dashboard(student_id):
+    students = db_select("students")
+    student = next((s for s in students if s['id'] == student_id), None)
     if not student:
         st.error("Student not found")
         return
 
     st.markdown(f"<div class='header'><h1>Welcome, {student['name']}! 👋</h1></div>", unsafe_allow_html=True)
 
-    # Check weekly unlock
     current_week = student['current_week']
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📚 Materials", "📝 Quizzes", "📋 Assignments", "📊 Progress", "📢 Announcements", "📝 Feedback", "📱 Social Posts"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
+        ["📚 Materials", "📝 Quizzes", "📋 Assignments", "📊 Progress",
+         "📢 Announcements", "📝 Feedback", "📱 Social Posts"]
+    )
 
     # TAB 1: Course Materials
     with tab1:
         st.subheader("📚 Course Materials")
-
-        # Week selector - can view current and previous weeks
         available_weeks = list(range(1, student['current_week'] + 1))
         selected_week = st.selectbox(
             "Select Week to View",
             available_weeks,
-            index=len(available_weeks)-1  # Default to current week
+            index=len(available_weeks) - 1
         )
-
         st.write(f"**Week {selected_week}**")
-        content = load_json(CONTENT_FILE)
+
+        content = db_select("content")
         week_content = [c for c in content if c['week'] == selected_week]
 
         if week_content:
@@ -599,12 +582,8 @@ def student_dashboard(student_id):
                     with col1:
                         st.write(f"**{item['type']}:** {item['title']}")
                         st.write(item['description'])
-
-                        # Show file if it's a course material
                         if item['type'] == "Course Material" and item.get('link'):
                             st.markdown(f"📄 [Download Material]({item['link']})")
-
-                        # Show link if available
                         if item['link'] and item['type'] != "Course Material":
                             st.markdown(f"🔗 [Access]({item['link']})")
                     with col2:
@@ -616,24 +595,21 @@ def student_dashboard(student_id):
     # TAB 2: Quizzes
     with tab2:
         st.subheader("📝 Quizzes")
-        quizzes = load_json(QUIZZES_FILE)
+        quizzes = db_select("quizzes")
 
-        # Week selector - can attempt current and previous weeks
         available_weeks = list(range(1, student['current_week'] + 1))
         selected_quiz_week = st.selectbox(
             "Select Week Quiz",
             available_weeks,
-            index=len(available_weeks)-1,  # Default to current week
+            index=len(available_weeks) - 1,
             key="quiz_week_selector"
         )
 
         week_quiz = next((q for q in quizzes if q['week'] == selected_quiz_week), None)
 
-        # Show this student's history for the selected week, if any
-        past_results = [
-            r for r in load_json(QUIZ_RESULTS_FILE)
-            if r['student_id'] == student_id and r['week'] == selected_quiz_week
-        ]
+        all_results = db_select("quiz_results", filters={"student_id": student_id})
+        past_results = [r for r in all_results if r['week'] == selected_quiz_week]
+
         if past_results:
             best = max(past_results, key=lambda r: r['percentage'])
             st.caption(f"You've attempted this week's quiz {len(past_results)} time(s). Best so far: {best['score']}/{best['total']} ({best['percentage']:.0f}%)")
@@ -652,9 +628,7 @@ def student_dashboard(student_id):
                 st.success(f"✅ Score: {score}/{len(week_quiz['questions'])} ({percentage:.0f}%)")
 
                 # 1) Always log the attempt — every submission is kept for the record.
-                quiz_results = load_json(QUIZ_RESULTS_FILE)
-                quiz_result = {
-                    "id": len(quiz_results) + 1,
+                db_insert("quiz_results", {
                     "student_id": student_id,
                     "student_name": student['name'],
                     "week": selected_quiz_week,
@@ -663,44 +637,35 @@ def student_dashboard(student_id):
                     "total": len(week_quiz['questions']),
                     "percentage": percentage,
                     "submitted": datetime.now().strftime("%Y-%m-%d %H:%M")
-                }
-                quiz_results.append(quiz_result)
-                save_json(QUIZ_RESULTS_FILE, quiz_results)
+                })
 
                 # 2) Reload the student fresh and check whether this week was
-                #    already passed before, so progress only ever moves ONCE
-                #    per week, no matter how many times the quiz is retaken.
-                students = load_json(STUDENTS_FILE)
-                idx = next((i for i, s in enumerate(students) if s['id'] == student_id), None)
-                student = students[idx]
+                # already passed before, so progress only ever moves ONCE
+                # per week, no matter how many times the quiz is retaken.
+                fresh_students = db_select("students")
+                student = next((s for s in fresh_students if s['id'] == student_id), None)
                 weeks_passed = get_weeks_passed(student)
                 already_passed = selected_quiz_week in weeks_passed
 
                 if percentage >= 70 and not already_passed:
                     # 3) First time passing this week — record it and advance once.
-                    weeks_passed.append(selected_quiz_week)
-                    student['weeks_passed'] = weeks_passed
-
+                    weeks_passed = weeks_passed + [selected_quiz_week]
+                    update_data = {"weeks_passed": weeks_passed}
                     if selected_quiz_week == student['current_week'] and student['current_week'] < 13:
-                        student['current_week'] += 1
-
-                    student['progress'] = recompute_progress(weeks_passed)
-
-                    students[idx] = student
-                    save_json(STUDENTS_FILE, students)
+                        update_data["current_week"] = student['current_week'] + 1
+                    update_data["progress"] = recompute_progress(weeks_passed)
+                    db_update("students", student_id, update_data)
 
                     if len(weeks_passed) >= 13:
                         st.info("🎉 Score 70%+ - Cohort Complete!")
                     else:
-                        st.info(f"🎉 Score 70%+ - Week {selected_quiz_week} passed! Week {student['current_week']} unlocked.")
+                        new_week = update_data.get("current_week", student['current_week'])
+                        st.info(f"🎉 Score 70%+ - Week {selected_quiz_week} passed! Week {new_week} unlocked.")
                     st.rerun()
-
                 elif already_passed:
                     st.info(f"📚 You already passed Week {selected_quiz_week} — your best score is what counts. This was just a practice attempt.")
-
                 elif percentage < 70 and selected_quiz_week == student['current_week']:
                     st.warning("⚠️ Score below 70%. Try again to unlock next week!")
-
                 else:
                     st.info("📚 This is a review attempt. Keep practicing!")
         else:
@@ -709,9 +674,9 @@ def student_dashboard(student_id):
     # TAB 3: Assignments
     with tab3:
         st.subheader(f"Week {current_week} - Assignment Submission")
-        assignments = load_json(ASSIGNMENTS_FILE)
+        assignments = db_select("assignments")
         week_assign = [a for a in assignments if a['week'] == current_week]
-        submissions = load_json(SUBMISSIONS_FILE)
+        submissions = db_select("submissions", filters={"student_id": student_id})
 
         if week_assign:
             for assign in week_assign:
@@ -719,8 +684,7 @@ def student_dashboard(student_id):
                 st.write(assign['description'])
                 st.caption(f"Due: {assign['due_date']}")
 
-                # Show previous submissions
-                my_submissions = [s for s in submissions if s['student_id'] == student_id and s['assignment_id'] == assign['id']]
+                my_submissions = [s for s in submissions if s['assignment_id'] == assign['id']]
                 if my_submissions:
                     st.info("**Your Submissions:**")
                     for sub in my_submissions:
@@ -733,21 +697,16 @@ def student_dashboard(student_id):
                             st.caption("Status: Submitted")
                         with col3:
                             if st.button("🗑️ Delete", key=f"del_sub_{sub['id']}"):
-                                submissions = [s for s in submissions if s['id'] != sub['id']]
-                                save_json(SUBMISSIONS_FILE, submissions)
+                                db_delete("submissions", sub['id'])
                                 st.success("✅ Submission deleted!")
                                 st.rerun()
 
-                # New submission form
                 with st.form(f"submit_{assign['id']}"):
                     google_drive_link = st.text_input("Google Drive Link (paste your shared file link)", key=f"link_{assign['id']}")
                     notes = st.text_area("Notes (optional)", key=f"notes_{assign['id']}")
-
                     if st.form_submit_button("Submit Assignment"):
                         if google_drive_link:
-                            submissions = load_json(SUBMISSIONS_FILE)
-                            new_sub = {
-                                "id": len(submissions) + 1,
+                            db_insert("submissions", {
                                 "student_id": student_id,
                                 "student_name": student['name'],
                                 "assignment": assign['title'],
@@ -756,14 +715,11 @@ def student_dashboard(student_id):
                                 "notes": notes,
                                 "submitted": datetime.now().strftime("%Y-%m-%d %H:%M"),
                                 "status": "Submitted"
-                            }
-                            submissions.append(new_sub)
-                            save_json(SUBMISSIONS_FILE, submissions)
+                            })
                             st.success("✅ Assignment submitted!")
                             st.rerun()
                         else:
                             st.error("❌ Please paste your Google Drive link")
-
                 st.divider()
         else:
             st.info("No assignment this week")
@@ -775,17 +731,15 @@ def student_dashboard(student_id):
         st.metric("Progress", f"{student['progress']}%")
         st.metric("Current Week", current_week)
         st.metric("Weeks Passed", len(get_weeks_passed(student)))
-
         if student['progress'] == 100:
             st.success("🎓 You've completed the cohort!")
 
     # TAB 5: Announcements
     with tab5:
         st.subheader("Announcements")
-        announcements = load_json(ANNOUNCEMENTS_FILE)
-
+        announcements = db_select("announcements", order_by="id", desc=True)
         if announcements:
-            for announce in reversed(announcements):
+            for announce in announcements:
                 with st.container():
                     st.write(f"**{announce['title']}**")
                     st.write(announce['message'])
@@ -797,9 +751,7 @@ def student_dashboard(student_id):
     # TAB 6: Feedback
     with tab6:
         st.subheader("Instructor Feedback")
-        feedback = load_json(FEEDBACK_FILE)
-        student_feedback = [f for f in feedback if f['student_id'] == student_id]
-
+        student_feedback = db_select("feedback", filters={"student_id": student_id})
         if student_feedback:
             for fb in student_feedback:
                 with st.container():
@@ -815,21 +767,9 @@ def student_dashboard(student_id):
         st.subheader("📱 Social Media Posting Ideas")
         st.write(f"**Week {current_week}** - Post your work on social media!")
 
-        social_media_file = "social_media_calendar.json"
-        student_posts_file = "student_social_posts.json"
+        social_calendar = db_select("social_media_calendar")
+        student_posts = db_select("student_social_posts", filters={"student_id": student_id})
 
-        if not os.path.exists(social_media_file):
-            with open(social_media_file, 'w') as f:
-                json.dump([], f)
-
-        if not os.path.exists(student_posts_file):
-            with open(student_posts_file, 'w') as f:
-                json.dump([], f)
-
-        social_calendar = load_json(social_media_file)
-        student_posts = load_json(student_posts_file)
-
-        # Get ideas for current week
         week_ideas = [idea for idea in social_calendar if idea['week'] == current_week]
 
         if week_ideas:
@@ -841,20 +781,16 @@ def student_dashboard(student_id):
                         if idea['description']:
                             st.caption(idea['description'])
 
-                    # Check if already posted
-                    posted = any(p['student_id'] == student_id and p['idea_id'] == idea['id'] and p['posted'] for p in student_posts)
-
+                    posted = any(p['idea_id'] == idea['id'] and p['posted'] for p in student_posts)
                     with col2:
                         if posted:
                             st.success("✅ Posted")
                         else:
                             st.caption("Not Posted")
-
                     with col3:
                         if not posted:
                             if st.button("✅ Mark Posted", key=f"mark_posted_{idea['id']}"):
-                                new_post = {
-                                    "id": len(student_posts) + 1,
+                                db_insert("student_social_posts", {
                                     "student_id": student_id,
                                     "student_name": student['name'],
                                     "idea_id": idea['id'],
@@ -863,33 +799,32 @@ def student_dashboard(student_id):
                                     "content_idea": idea['content_idea'],
                                     "posted": True,
                                     "posted_date": datetime.now().strftime("%Y-%m-%d %H:%M")
-                                }
-                                student_posts.append(new_post)
-                                save_json(student_posts_file, student_posts)
+                                })
                                 st.success("✅ Marked as posted!")
                                 st.rerun()
                     st.divider()
         else:
             st.info("No posting ideas for this week yet")
 
+
+# ============================================================
 # MAIN APP
+# ============================================================
 def main():
     st.sidebar.title("Tech With Eunice LMS")
 
     if not st.session_state.logged_in:
         st.markdown("<div class='header'><h1>🎓 Tech With Eunice Learning Platform</h1></div>", unsafe_allow_html=True)
-
         login_type = st.radio("Login as:", ["Student", "Instructor"])
 
         if login_type == "Student":
             st.subheader("Student Login")
-            students = load_json(STUDENTS_FILE)
+            students = db_select("students")
             student_names = {s['name']: s['id'] for s in students}
 
             if student_names:
                 selected = st.selectbox("Select your name", list(student_names.keys()))
                 password = st.text_input("Password (your email)", type="password")
-
                 if st.button("Login"):
                     student = next((s for s in students if s['name'] == selected), None)
                     if student and password == student['email']:
@@ -901,11 +836,9 @@ def main():
                         st.error("Invalid credentials")
             else:
                 st.warning("No students registered yet")
-
         else:
             st.subheader("Instructor Login")
             admin_pass = st.text_input("Admin Password", type="password")
-
             if st.button("Login as Instructor"):
                 if check_admin_password(admin_pass):
                     st.session_state.logged_in = True
@@ -913,7 +846,6 @@ def main():
                     st.rerun()
                 else:
                     st.error("Invalid password")
-
     else:
         if st.sidebar.button("🚪 Logout"):
             st.session_state.logged_in = False
@@ -925,6 +857,7 @@ def main():
             admin_dashboard()
         else:
             student_dashboard(st.session_state.current_student_id)
+
 
 if __name__ == "__main__":
     main()
